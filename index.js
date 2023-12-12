@@ -86,9 +86,7 @@ function blueskyStatic() {
       webLoader.style.fontStyle = null;
       webLoader.innerHTML = `
     <h3>Dynamic web update access</h3>
-    <p>
     <pre>${JSON.stringify(cursorsJSON, null, 2)}</pre>
-    </p>
     <p>
       To run dynamic update from this web page, GitHub token is required:
       <input id=tokenINPUT name=tokenINPUT autocomplete=on>
