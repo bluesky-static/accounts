@@ -91,9 +91,17 @@ function blueskyStatic() {
     </p>
     <p>
       To run dynamic update from this web page, GitHub token is required:
-      <input id=tokenINPUT>
+      <input id=tokenINPUT name=tokenINPUT autocomplete=on>
+      <br>
+      <button id=startUpdateBUTTON>Start update</button>
     </p>
     `;
+
+      const tokenINPUT = document.getElementById('tokenINPUT');
+      const startUpdateBUTTON = document.getElementById('startUpdateBUTTON');
+
+      startUpdateBUTTON.onclick = async () => {
+      };
 
     }
 
