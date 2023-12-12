@@ -1,0 +1,16 @@
+{
+  "name": "bluesky-static-accounts",
+  "version": "1.0.0",
+  "private": true,
+  "description": "This repository contains basic account information for BlueSky accounts in JSON format.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@atproto/api": "^0.7.2"
+  }
+}
