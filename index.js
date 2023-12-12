@@ -14,10 +14,14 @@ function blueskyStatic() {
 
   async function runInBrowser() {
 
-    initDisplayReadme();
+    const atprotoPromise = importModule('@atproto/api');
+    await initDisplayReadme();
+
+    await tryEnableDynamicWebUpdate();
 
     async function initDisplayReadme() {
-      await importScript((/http/i.test(location.protocol) ? '' : 'http:') + '//unpkg.com/marked');
+      await importModule('marked');
+
       const readme = await loadJsonp('./README.md', 'jsonp');
       const html = marked.parse(
         readme
@@ -44,55 +48,56 @@ function blueskyStatic() {
       }
     }
 
-    function importScript(src) {
-      return new Promise((resolve, reject) => {
-        const scr = document.createElement('script');
-        scr.src = src;
-        scr.onload = () => {
-          setTimeout(resolve, 100);
-        };
-        document.body.appendChild(scr);
-      });
+    async function tryEnableDynamicWebUpdate() {
+
+      const webLoader = document.createElement('div');
+      webLoader.style.cssText = 'font-style: italic;';
+      webLoader.textContent = '(dynamic)';
+      document.body.appendChild(webLoader);
+
+      let atproto;
+      try {
+        const atproto = await atprotoPromise;
+        await octokit;
+
+        console.log('loaded ', { atproto, octokit });
+      } catch (errorLoadingLibraries) {
+        console.log(errorLoadingLibraries);
+        webLoader.textContent = '(dynamic web update disabled: ' + errorLoadingLibraries.message + ')';
+        return;
+      }
+
+      webLoader.textContent = '(dynamic web update)';
+
+      let cursorsJSON;
+      try {
+        const oct = new octokit.Octokit();
+        const cursorsReq = await oct.request('GET /repos/bluesky-static/accounts/contents/cursors.json');
+        const content = cursorsReq.data.content;
+        cursorsJSON = JSON.parse(atob(content));
+      } catch (error) {
+        console.log(error);
+        webLoader.textContent = '(dynamic web update not available: ' + error.message + ')';
+        return;
+      }
+
+      // TODO: verify read/only public GitHub access before showing the section below
+
+      webLoader.style.fontStyle = null;
+      webLoader.innerHTML = `
+    <h3>Dynamic web update access</h3>
+    <p>
+    <pre>${JSON.stringify(cursorsJSON, null, 2)}</pre>
+    </p>
+    <p>
+      To run dynamic update from this web page, GitHub token is required:
+      <input id=tokenINPUT>
+    </p>
+    `;
+
     }
 
-    async function loadJsonp(src, callbackName) {
-      return new Promise((resolve, reject) => {
-        const ifr = document.createElement('iframe');
-        ifr.src = 'about:blank';
-        ifr.style.cssText = 'position:fixed;top:-1000px;left:-1000px; width: 200px; height: 200px; opacity: 0.001;';
-        ifr.onload = function () {
-          ifr.contentWindow.module = { exports: {} };
-          ifr.contentWindow[callbackName] = function (data) {
-            resolve(data);
-            setTimeout(() => {
-              ifr.remove();
-            }, 10);
-          };
 
-          const scr = document.createElement('script');
-          scr.src = src;
-          scr.onload = () => {
-            setTimeout(
-              () => {
-                if (!ifr.parentElement) return;
-                if (ifr.contentWindow.module.exports && Object.keys(ifr.contentWindow.module.exports).length === 0) {
-                  reject(new Error(
-                    'Script loaded without JSONP invocation: ' + src));
-                } else {
-                  resolve(ifr.contentWindow.module.exports);
-                }
-
-                setTimeout(() => {
-                  ifr.remove();
-                }, 10);
-              },
-              100);
-          };
-          ifr.contentDocument.body.appendChild(scr);
-        };
-        document.body.appendChild(ifr);
-      });
-    }
   }
 
 } blueskyStatic();

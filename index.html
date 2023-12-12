@@ -6,6 +6,21 @@
 <title>BlueSky Static Maintenance Page</title>
 </head>
 <body>
+<script>
+octokit = (() => {
+  let res;
+  const prom = new Promise(resolve => { res = resolve });
+  prom.loaded = res;
+  return prom;
+})();
+</script>
+<script type="module">
+import * as octokit from "https://esm.sh/octokit";
+const prom = window.octokit;
+window.octokit = octokit;
+prom.loaded(octokit);
+</script>
+<script src="js/browser-utils.js"></script>
 <script src="index.js"></script>
   
 </body>
