@@ -1,32 +1,10 @@
 // @ts-check
 
-const fs = require('fs');
-const path = require('path');
-const child_process = require('child_process');
+export const isWeb =
+  typeof window !== 'undefined' && typeof window?.document?.createElement === 'function' &&
+  /http|file/i.test(window.location?.protocol);
 
-var clientDescription;
-function getClientDescription() {
-  if (clientDescription) return clientDescription;
-
-  var platformDescr = 'node' + process.version.replace(/^v/, '') + ' ' + process.platform + '/' + process.arch;
-
-  var package = require('../package.json');
-  var packageDescr = package.name + '@' + package.version;
-
-  var gitDescr = 'git:unknown';
-  if (fs.existsSync(path.join(__dirname, '../.git'))) {
-    try {
-      var gitHash = child_process.execSync('git rev-parse HEAD').toString('utf8').trim();
-      var gitDirty = child_process.execSync('git status --porcelain').toString('utf8').trim();
-      var gitDescr = 'git:' + gitHash + (gitDirty ? '*' : '');
-    } catch (gitError) {
-    }
-  }
-
-  return clientDescription = platformDescr + ' ' + packageDescr + ' ' + gitDescr;
-}
-
-function packDidsJson(dids, lead = '[\n', tail = '\n]\n') {
+export function packDidsJson(dids, lead = '[\n', tail = '\n]\n') {
   const DIDS_SINGLE_LINE = 6;
   const didsLines = [];
   for (let i = 0; i < dids.length; i += DIDS_SINGLE_LINE) {
@@ -38,43 +16,9 @@ function packDidsJson(dids, lead = '[\n', tail = '\n]\n') {
   return lead + didsLines.join(',\n') + tail;
 }
 
-function allDIDFilesJSON() {
-  const didsDir = path.resolve(__dirname, '../dids');
-  const oneLetterDirs =   /** @type {string[]} */(fs.readdirSync(didsDir)
-    .map(name => path.basename(name).length === 1 ? path.resolve(didsDir, name) : undefined)
-    .filter(Boolean));
-
-  const allFiles = [];
-  for (const oneLetterDir of oneLetterDirs) {
-    const files =
-      fs.readdirSync(oneLetterDir)
-        .map(name => path.resolve(oneLetterDir, name))
-        .filter(name => name.endsWith('.json'));
-
-    for (const f of files) {
-      allFiles.push(f);
-    }
-  }
-
-  allFiles.push(path.resolve(__dirname, '../dids/web.json'));
-
-  return allFiles;
-}
-
-function allShortDIDs() {
-  const allShortDIDs = [];
-  for (const f of allDIDFilesJSON()) {
-    const dids = JSON.parse(fs.readFileSync(f, 'utf8'));
-    for (const did of dids) {
-      allShortDIDs.push(did);
-    }
-  }
-  return allShortDIDs;
-}
-
 var wordStartRegExp = /[A-Z]*[a-z]*/g;
-/** @param {string} str */
-function getWordStartsLowerCase(str, wordStarts) {
+/** @param {string} str @param {string[]} wordStarts */
+export function getWordStartsLowerCase(str, wordStarts = []) {
   if (!wordStarts) wordStarts = [];
   str.replace(wordStartRegExp, function (match) {
     const wordStart = match?.slice(0, 3).toLowerCase();
@@ -86,7 +30,7 @@ function getWordStartsLowerCase(str, wordStarts) {
 }
 
 /** @param {string | Date | number} date */
-function formatSince(date) {
+export function formatSince(date) {
   date = new Date(date);
   const now = Date.now();
   const dateTime = date.getTime();
@@ -108,11 +52,22 @@ function formatSince(date) {
       return 'now';
     }
   }
+}
 
+export function getKeyPath(bucketKey) {
+  if (bucketKey === 'web') return 'dids/web.json';
+  else return 'dids/' + bucketKey[0] + '/' + bucketKey + '.json';
+}
+
+
+/** @param {string} shortDID */
+export function getKeyShortDID(shortDID) {
+  if (shortDID.indexOf(':') >= 0) return 'web';
+  return shortDID.slice(0, 2);
 }
 
 /** @param {string} text */
-function likelyDID(text) {
+export function likelyDID(text) {
   return text && (
     !text.trim().indexOf('did:') ||
     text.trim().length === 24 && !/[^\sa-z0-9]/i.test(text)
@@ -120,33 +75,20 @@ function likelyDID(text) {
 }
 
 /** @param {string | null | undefined} did */
-function shortenDID(did) {
+export function shortenDID(did) {
   return typeof did === 'string' ? did.replace(/^did\:plc\:/, '') : did;
 }
 
-function unwrapShortDID(shortDID) {
+export function unwrapShortDID(shortDID) {
   return !shortDID ? shortDID : shortDID.indexOf(':') < 0 ? 'did:plc:' + shortDID : shortDID;
 }
 
-function unwrapShortHandle(shortHandle) {
+export function unwrapShortHandle(shortHandle) {
   return !shortHandle ? shortHandle : shortHandle.indexOf('.') < 0 ? shortHandle + '.bsky.social' : shortHandle;
 }
 
 /** @param {string} handle */
-function shortenHandle(handle) {
+export function shortenHandle(handle) {
   return handle && handle.replace(_shortenHandle_Regex, '');
 }
 const _shortenHandle_Regex = /\.bsky\.social$/;
-
-
-
-module.exports = {
-  getWordStartsLowerCase,
-  getClientDescription,
-  packDidsJson,
-  formatSince,
-  likelyDID,
-  shortenDID, unwrapShortDID,
-  shortenHandle, unwrapShortHandle,
-  allDIDFilesJSON, allShortDIDs
-};

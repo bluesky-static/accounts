@@ -1,167 +1,197 @@
 // @ts-check
 
-const fs = require('fs');
-const path = require('path');
-const atproto = require('@atproto/api');
-const { formatSince, shortenDID, getClientDescription, packDidsJson, allShortDIDs } = require('./utils');
+import { shortenDID } from './utils';
+import { getKeyShortDID } from './utils';
 
-const atClient = new atproto.BskyAgent({
-  // service: 'https://bsky.social/xrpc'
-  service: 'https://bsky.network/xrpc'
-});
-
-/** @param {string} shortDID */
-function getKeyShortDID(shortDID) {
-  if (shortDID.indexOf(':') >= 0) return 'web';
-  return shortDID.slice(0, 2);
-}
-
-async function updateFromLatest() {
-  console.log('Static BlueSky accounts maintenance...');
-  process.stdout.write('Currently ');
-
-  const startCursor = readCursors().listRepos;
-  /** @type {string | undefined} */
-  var didsCursor = startCursor.cursor || undefined;
-
-  const initialShortDIDCount = allShortDIDs().length;
-
-  console.log(initialShortDIDCount.toLocaleString('en-us') + ' DIDs, updating from cursor:' + startCursor.cursor + '...');
-
-
-  const BUFFER_DIDS_INTERVAL = 1000 * 20;
-  const BUFFER_DIDS_COUNT = 20000;
-
-  let addedTotal = 0;
-  let bufAddShortDids = [];
-  let callTime = 0;
-  let callCount = 0;
-  let nextAddDids = Date.now() + BUFFER_DIDS_INTERVAL;
-  let startBuf = Date.now();
-  /** @type {ReturnType<typeof atClient.com.atproto.sync.listRepos> | undefined} */
-  var aheadPromise;
+/**
+ * @param {{
+ *  atClient: import('@atproto/api').BskyAgent,
+ *  cursor: string | number | undefined | null
+ * }} _
+ */
+export async function* updateDIDs({ atClient, cursor }) {
+  let currentCursor = cursor;
+  let totalCallTime = 0;
+  let totalCallCount = 0;
+  let totalReceived = 0;
+  let totalAdded = 0;
+  let totalReduced = 0;
+  let bufferCallTime = 0;
+  let bufferCallCount = 0;
+  let bufferShortDIDs = [];
   while (true) {
     const callStart = Date.now();
-    const nextList = await
-      (aheadPromise ||
-      atClient.com.atproto.sync.listRepos({ cursor: didsCursor, limit: 970 }));
-    
-    callTime += Date.now() - callStart;
-    callCount++;
+    const reply = await
+      atClient.com.atproto.sync.listRepos({
+        cursor:
+          currentCursor == null || currentCursor === '' ? undefined :
+            String(currentCursor),
+        limit: 997
+      });
+    const callTime = Date.now() - callStart;
 
-    if (nextList.data.cursor)
-      didsCursor = nextList.data.cursor;
+    if (reply?.data?.repos?.length || reply?.data?.cursor)
+      yield prepareUpdate(reply.data.repos, reply.data.cursor, callTime);
 
-    aheadPromise = !didsCursor ? undefined :
-      atClient.com.atproto.sync.listRepos({ cursor: didsCursor, limit: 997 });
+    if (!reply.data?.cursor) {
+      break;
+    }
 
-    if (nextList.data?.repos?.length) {
-      const addDids = nextList.data.repos.map(repo => shortenDID(repo.did));
-      for (const shortDID of addDids) {
-        bufAddShortDids.push(shortDID);
+    currentCursor = reply.data.cursor;
+  }
+
+  /**
+   * @param {{ did?: string }[] | undefined} repos
+   * @param {string | undefined} cursor
+   * @param {number} callTime
+   */
+  function prepareUpdate(repos, cursor, callTime) {
+    let received = 0;
+    if (repos?.length) {
+      for (const { did } of repos) {
+        if (!did) continue;
+        const shortDID = shortenDID(did);
+        bufferShortDIDs.push(shortDID);
+        received++;
+        totalReceived++;
       }
     }
 
-    if (bufAddShortDids.length > BUFFER_DIDS_COUNT || (bufAddShortDids.length && Date.now() > nextAddDids)) {
-      updateDidsJson(bufAddShortDids, didsCursor);
-      bufAddShortDids = [];
-      nextAddDids = Date.now() + BUFFER_DIDS_INTERVAL;
-    }
+    bufferCallCount++;
+    totalCallCount++;
+    bufferCallTime += callTime;
+    totalCallTime += callTime;
 
-    if (!nextList.data?.cursor) {
-      break;
-    }
+
+    const yields = {
+      cursor,
+      callStats: {
+        callTime,
+        received
+      },
+      bufferStats: {
+        callTime: bufferCallTime,
+        callCount: bufferCallCount,
+        received: bufferShortDIDs.length
+      },
+      totalStats: {
+        callTime: totalCallTime,
+        callCount: totalCallCount,
+        received: totalReceived
+      },
+      apply: applyUpdate
+    };
+
+    return yields;
   }
 
-  if (bufAddShortDids.length) {
-    updateDidsJson(bufAddShortDids, didsCursor);
-    bufAddShortDids = [];
-  }
+  /**
+   * @param {{
+   * initialShortDIDCount: number,
+   *  getBucketText: (key: string) => Promise<string> | string,
+   *  getCursorsText: () => Promise<string> | string,
+   *  getReadmeText: () => Promise<string> | string,
+   *  getClientDescription: () => string
+   * }} _
+   */
+  async function applyUpdate({
+    initialShortDIDCount,
+    getBucketText,
+    getCursorsText,
+    getReadmeText,
+    getClientDescription }) {
+    const shortDIDs = bufferShortDIDs;
+    bufferShortDIDs = [];
+    bufferCallTime = 0;
+    bufferCallCount = 0;
 
-  console.log('Added ' + addedTotal.toLocaleString('en-us') + ' users, cursor:' + didsCursor);
-
-
-  function updateDidsJson(addShortDids, didsCursor) {
-    if (!addShortDids?.length) return;
-
-    process.stdout.write('  +');
-    let added = 0;
     const groupedByKey = {};
-    for (const shortDID of addShortDids) {
+    const keys = [];
+    for (const shortDID of shortDIDs) {
       const key = getKeyShortDID(shortDID);
       let bucket = groupedByKey[key];
       if (bucket) bucket.push(shortDID);
-      else groupedByKey[key] = [shortDID];
+      else {
+        keys.push(key);
+        groupedByKey[key] = [shortDID];
+      }
     }
 
-    for (const key in groupedByKey) {
-      const bucketPath = path.resolve(__dirname,
-        '../dids/' +
-        (key === 'web' ? 'web.json' : key[0] + '/' + key + '.json'));
-      const dids = JSON.parse(fs.readFileSync(bucketPath, 'utf8'));
-      const set = new Set(dids);
-      let bucketAdded = 0;
-      for (const shortDID of groupedByKey[key]) {
-        if (set.has(shortDID)) continue;
-        bucketAdded++;
-        set.add(shortDID);
-        dids.push(shortDID);
+    const keyBucketContents = await Promise.all(keys.map(key => getBucketText(key)));
+    const applyResult = {
+      applyStats: {
+        added: 0,
+        reduced: 0,
+      },
+      totalStats: {
+        added: totalAdded,
+        reduced: totalReduced,
+      },
+      /** @type {{ [key: string]: string[] }} */
+      modifiedByKey: {},
+      /** @type {string | undefined} */
+      readme: undefined,
+      /** @type {string | undefined} */
+      cursors: undefined
+    };
+
+    for (let iKey = 0; iKey < keys.length; iKey++) {
+      const key = keys[iKey];
+      /** @type {readonly string[]} */
+      const originalBucketArray = JSON.parse(keyBucketContents[iKey]);
+      const bucketSet = new Set(originalBucketArray);
+      let modified = originalBucketArray.length - bucketSet.size;
+      applyResult.applyStats.reduced += modified;
+      const addBucketShortDIDs = groupedByKey[key];
+
+      for (const addShortDID of addBucketShortDIDs) {
+        if (!bucketSet.has(addShortDID)) {
+          bucketSet.add(addShortDID);
+          modified++;
+          applyResult.applyStats.added++;
+        }
       }
 
-      if (!bucketAdded) continue;
-
-      added += bucketAdded;
-      process.stdout.write(key + ':' + bucketAdded + ' ');
-      fs.writeFileSync(
-        bucketPath,
-        packDidsJson(dids));
+      if (modified) {
+        const modifiedBucketArray = Array.from(bucketSet);
+        applyResult.modifiedByKey[key] = modifiedBucketArray;
+      }
     }
 
-    if (added) {
+    if (applyResult.applyStats.added + applyResult.applyStats.reduced) {
       const timestamp = new Date().toISOString();
 
-      fs.writeFileSync(
-        path.resolve(__dirname, '../cursors.json'),
-        JSON.stringify({
-          ...readCursors(),
-          listRepos: {
-            cursor: didsCursor,
-            timestamp: new Date().toISOString(),
-            client: getClientDescription()
-          }
-        }, null, 2));
+      const cursorsText = await getCursorsText();
+      const baseCursors = cursorsText ? JSON.parse(cursorsText) : {};
+      applyResult.cursors = JSON.stringify({
+        ...baseCursors,
+        listRepos: {
+          cursor: currentCursor,
+          timestamp,
+          client: getClientDescription()
+        }
+      }, null, 2);
 
-      const readmePath = path.resolve(__dirname, '../README.md');
-      const readmeContent = fs.readFileSync(readmePath, 'utf8');
-      const injectTimestamp = readmeContent
-        .replace(/<span class=timestamp>[^<]*<\/span>/,
-          '<span class=timestamp>' + timestamp + '</span>')
-        .replace(/<span class=accountnumber>[^<]*<\/span>/,
-          '<span class=accountnumber>' + (initialShortDIDCount + addedTotal + added) + '</span>');
-      if (injectTimestamp !== readmeContent) {
-        fs.writeFileSync(readmePath, injectTimestamp);
+      const readmeContent = await getReadmeText();
+      if (readmeContent) {
+        const injectTimestamp = readmeContent
+          .replace(/<span class=timestamp>[^<]*<\/span>/,
+            '<span class=timestamp>' + timestamp + '</span>')
+          .replace(/<span class=accountnumber>[^<]*<\/span>/,
+            '<span class=accountnumber>' + (initialShortDIDCount + totalAdded - totalReduced) + '</span>');
+        if (injectTimestamp !== readmeContent) {
+          applyResult.readme = injectTimestamp;
+        }
       }
     }
 
-    console.log(
-      added + '/' + addShortDids.length + ' dids cursor:' + didsCursor +
-      '  ' + callCount + '/HTTP ' + (callTime / 1000) + 's, ' +
-      ' processing ' + ((Date.now() - startBuf - callTime)/1000) + 's');
+    totalAdded += applyResult.applyStats.added;
+    applyResult.totalStats.added = totalAdded;
 
-    addedTotal += added;
-    callTime = 0;
-    callCount = 0;
-    startBuf = Date.now();
+    totalReduced += applyResult.applyStats.reduced;
+    applyResult.totalStats.reduced = totalReduced;
+
+
+    return applyResult;
   }
-
-  function readCursors() {
-    return /** @type {typeof import('../cursors.json')} */(
-      JSON.parse(fs.readFileSync(require.resolve('../cursors.json'), 'utf8'))
-    );
-  }
-
 }
-
-module.exports = {
-  updateFromLatest,
-};

@@ -5,12 +5,19 @@
   "description": "This repository contains basic account information for BlueSky accounts in JSON format.",
   "main": "index.js",
   "scripts": {
+    "start": "node index.js",
+    "build": "rollup ./js/index.js --file ./index.js --format iife --plugin @rollup/plugin-node-resolve --plugin @rollup/plugin-commonjs --context this",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
-  "author": "",
+  "author": "Oleg Mihailik",
   "license": "ISC",
-  "devDependencies": {
-    "@atproto/api": "^0.7.2"
+  "dependencies": {
+    "@atproto/api": "^0.7.3",
+    "@octokit/rest": "^20.0.2",
+    "@rollup/plugin-commonjs": "^25.0.7",
+    "@rollup/plugin-node-resolve": "^15.2.3",
+    "marked": "^11.1.0",
+    "rollup": "^4.9.0"
   }
 }
