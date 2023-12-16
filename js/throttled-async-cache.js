@@ -2,7 +2,7 @@
 
 import { isPromise } from './utils';
 
-export function throttledAsyncCache(call, { maxConcurrency = 3 } = {}) {
+export function throttledAsyncCache(call, { maxConcurrency = 3, interval = 100 } = {}) {
   const cache = multikeyMap();
 
   const outstandingRequests = new Set();
@@ -50,8 +50,13 @@ export function throttledAsyncCache(call, { maxConcurrency = 3 } = {}) {
     }
   }
 
-  function scheduleAsAppropriate() {
+  async function scheduleAsAppropriate() {
     if (outstandingRequests.size >= maxConcurrency) return;
+
+    if (interval) {
+      await new Promise(resolve => setTimeout(resolve, interval));
+      if (outstandingRequests.size >= maxConcurrency) return;
+    }
 
     const nextRequest = [...waitingRequests].sort((a, b) => b.priority - a.priority)[0];
     if (!nextRequest) return;
@@ -59,7 +64,7 @@ export function throttledAsyncCache(call, { maxConcurrency = 3 } = {}) {
 
     if (outstandingRequests.size < maxConcurrency) {
       clearTimeout(scheduleMoreLaterTimeout);
-      scheduleMoreLaterTimeout = setTimeout(scheduleAsAppropriate, 100);
+      scheduleMoreLaterTimeout = setTimeout(scheduleAsAppropriate, (interval || 100));
     }
   }
 }

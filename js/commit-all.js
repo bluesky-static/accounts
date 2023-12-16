@@ -13,6 +13,7 @@ for (const repoPath of accountsIndexRepoPaths) {
     // 'git checkout main'
     //' &&
     'git add . && git commit -m Initial';
+    //'git reset --hard HEAD';
   process.stdout.write(repoPath + '> ' + command);
   const result = child_process.execSync(
     command,

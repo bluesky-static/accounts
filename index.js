@@ -30926,6 +30926,19 @@ if (cid) {
 	  return lead + didsLines.join(',\n') + tail;
 	}
 
+	var wordStartRegExp = /[A-Z]*[a-z]*/g;
+	/** @param {string} str @param {string[]} wordStarts */
+	function getWordStartsLowerCase(str, wordStarts = []) {
+	  if (!wordStarts) wordStarts = [];
+	  str.replace(wordStartRegExp, function (match) {
+	    const wordStart = match?.slice(0, 3).toLowerCase();
+	    if (wordStart?.length === 3 && wordStarts.indexOf(wordStart) < 0)
+	      wordStarts.push(wordStart);
+	    return match;
+	  });
+	  return wordStarts;
+	}
+
 	function getKeyPath(bucketKey) {
 	  if (bucketKey === 'web') return 'dids/web.json';
 	  else return 'dids/' + bucketKey[0] + '/' + bucketKey + '.json';
@@ -30937,9 +30950,34 @@ if (cid) {
 	  return shortDID.slice(0, 2);
 	}
 
+
+	function getProfileBlobUrl(did, cid) {
+	  if (!did || !cid) return undefined;
+	  return `https://cdn.bsky.app/img/avatar/plain/${unwrapShortDID(did)}/${cid}@jpeg`;
+	}
+
 	/** @param {string | null | undefined} did */
 	function shortenDID(did) {
 	  return typeof did === 'string' ? did.replace(/^did\:plc\:/, '') : did;
+	}
+
+	function unwrapShortDID(shortDID) {
+	  return !shortDID ? shortDID : shortDID.indexOf(':') < 0 ? 'did:plc:' + shortDID : shortDID;
+	}
+
+	/** @param {string} handle */
+	function shortenHandle(handle) {
+	  return handle && handle.replace(_shortenHandle_Regex, '');
+	}
+	const _shortenHandle_Regex = /\.bsky\.social$/;
+
+	/**
+	 * @param {any} x
+	 * @returns {x is Promise<any>}
+	 */
+	function isPromise(x) {
+	  if (!x || typeof x !== 'object') return false;
+	  else return typeof x.then === 'function';
 	}
 
 	// @ts-check
@@ -31389,22 +31427,462 @@ if (cid) {
 	  }
 	}
 
+	// @ts-check
+
+
+	function throttledAsyncCache(call, { maxConcurrency = 3, interval = 100 } = {}) {
+	  const cache = multikeyMap();
+
+	  const outstandingRequests = new Set();
+	  const waitingRequests = new Set();
+
+	  var scheduleMoreLaterTimeout;
+
+	  return throttledCall;
+
+	  function throttledCall(...args) {
+	    let result = cache.get(...args);
+	    if (result) {
+	      if (isPromise(result.value)) result.priority++;
+	      return result.value;
+	    }
+
+	    let scheduleNow;
+	    const schedulePromise = new Promise(resolve => scheduleNow = resolve);
+
+	    const entry = {
+	      priority: 0,
+	      value: invokeCall(),
+	      scheduleNow
+	    };
+
+	    cache.set(...args, entry);
+	    waitingRequests.add(entry);
+
+	    scheduleAsAppropriate();
+
+	    return entry.value;
+
+	    async function invokeCall() {
+	      await schedulePromise;
+	      waitingRequests.delete(entry);
+	      outstandingRequests.add(entry);
+	      try {
+	        const result = await call(...args);
+	        entry.value = result;
+	        return result;
+	      } finally {
+	        outstandingRequests.delete(entry);
+	        scheduleAsAppropriate();
+	      }
+	    }
+	  }
+
+	  async function scheduleAsAppropriate() {
+	    if (outstandingRequests.size >= maxConcurrency) return;
+
+	    if (interval) {
+	      await new Promise(resolve => setTimeout(resolve, interval));
+	      if (outstandingRequests.size >= maxConcurrency) return;
+	    }
+
+	    const nextRequest = [...waitingRequests].sort((a, b) => b.priority - a.priority)[0];
+	    if (!nextRequest) return;
+	    nextRequest.scheduleNow();
+
+	    if (outstandingRequests.size < maxConcurrency) {
+	      clearTimeout(scheduleMoreLaterTimeout);
+	      scheduleMoreLaterTimeout = setTimeout(scheduleAsAppropriate, (interval || 100));
+	    }
+	  }
+	}
+
+	function multikeyMap() {
+	  /** @type {Map & { _value?: any }} */
+	  const storeMap = new Map();
+
+	  const resultMap = {
+	    get,
+	    set,
+	    delete: deleteKeys,
+	    has,
+	    clear
+	  };
+
+	  return resultMap;
+
+	  function get(...keys) {
+	    let entry = storeMap;
+	    for (const key of keys) {
+	      entry = entry.get(key);
+	      if (!entry) return;
+	    }
+	    return entry._value;
+	  }
+
+	  function set(...keys) {
+	    let entry = storeMap;
+	    for (let i = 0; i < keys.length - 1; i++) {
+	      const key = keys[i];
+	      entry = entry.get(key) || entry.set(key, new Map()).get(key);
+	    }
+	    entry._value = keys[keys.length - 1];
+	    return resultMap;
+	  }
+
+	  function deleteKeys(...keys) {
+	    let entry = storeMap;
+	    for (let i = 0; i < keys.length - 1; i++) {
+	      const key = keys[i];
+	      entry = entry.get(key);
+	      if (!entry) return false;
+	    }
+	    return entry.delete[keys.length - 1];
+	  }
+
+	  function has(...keys) {
+	    let entry = storeMap;
+	    for (const key of keys) {
+	      entry = entry.get(key);
+	      if (!entry) return false;
+	    }
+	    return true;
+	  }
+
+	  function clear() {
+	    return storeMap.clear();
+	  }
+	}
+
+	// @ts-check
+
+
+	/**
+	 * @param {{
+	 *  atClient: import('@atproto/api').BskyAgent,
+	 *  dids: string[]
+	 * }} _
+	 */
+	async function* updateIndexBatched({ atClient, dids }) {
+	  let buffer = [];
+	  /** @type {{ [shortDID: string]: Error}} */
+	  let failedShortDIDs = {};
+	  let bufferStartSize = 0;
+	  let batchStart = Date.now();
+
+	  const MAX_BATCH_SIZE = 1000;
+	  const MAX_REPORT_INTERVAL = 1000 * 20;
+
+	  for await (const profile of fetchProfiles({ atClient, dids })) {
+	    if (profile.error) {
+	      failedShortDIDs[profile.shortDID] = profile.error;
+	      continue;
+	    } else {
+	      buffer.push(profile);
+	    }
+
+	    if (buffer.length - bufferStartSize >= MAX_BATCH_SIZE ||
+	      Date.now() - batchStart >= MAX_REPORT_INTERVAL) {
+	      yield prepareUpdate();
+
+	      bufferStartSize = buffer.length;
+	      batchStart = Date.now();
+	    }
+	  }
+
+	  if (buffer.length) {
+	    yield prepareUpdate();
+	  }
+
+	  function prepareUpdate() {
+
+	    return {
+	      received: buffer.length,
+	      flush
+	    };
+
+	    function flush() {
+	      const batch = buffer;
+	      const batchErrors = failedShortDIDs;
+	      buffer = [];
+	      failedShortDIDs = {};
+
+	      /**
+	       * @type {{ errors: { [shortDID: string]: Error } } & {
+	       *  [bucketKey: string]: {
+	       *    indexPath: string,
+	       *    repository: string,
+	       *    repoPath: string,
+	       *    profiles: {
+	       *      [shortDID: string]: Awaited<ReturnType<typeof getShortDIDIndexData>>
+	       *    }
+	       *  }
+	       * }}
+	       */
+	      const buckets = {};
+	      buckets.errors = batchErrors;
+
+	      for (const profile of batch) {
+	        const wordStarts = [];
+	        if (profile.handle) getWordStartsLowerCase(profile.handle, wordStarts);
+	        if (profile.displayName) getWordStartsLowerCase(profile.displayName, wordStarts);
+
+	        for (const wordStart of wordStarts) {
+	          let bucket = buckets[wordStart];
+	          const indexPath = getPrefixIndexPath(wordStart);
+	          const { repository, path: repoPath } = mapPrefixToRepositoryPath(wordStart);
+	          if (!bucket) buckets[wordStart] = bucket = {
+	            indexPath,
+	            repository,
+	            repoPath,
+	            profiles: {}
+	          };
+	          bucket.profiles[profile.shortDID] = profile;
+	        }
+	      }
+
+	      return buckets;
+	    }
+	  }
+	}
+
+	/**
+	 * @param {{
+	 *  atClient: import('@atproto/api').BskyAgent,
+	 *  dids: string[]
+	 * }} _
+	 */
+	async function* fetchProfiles({ atClient, dids }) {
+	  const throttledFetch = throttledAsyncCache(
+	    getShortDIDIndexDataWithRetry, { maxConcurrency: 3, interval: 400 });
+
+	  const fetchProimiseSet = new Set(
+	    dids.map(did => {
+	      const promise = throttledFetch(atClient, shortenDID(did))
+	        .catch(err => ({
+	          shortDID: shortenDID(did),
+	          handle: err.message,
+	          error: err
+	        }));
+
+	      promise.then(
+	        () => fetchProimiseSet.delete(promise),
+	        () => fetchProimiseSet.delete(promise));
+	      return promise;
+	    }));
+
+	  while (fetchProimiseSet.size) {
+	    /** @type {Awaited<ReturnType<typeof getShortDIDIndexData>>} */
+	    let nextFound = await Promise.race(fetchProimiseSet);
+	    yield nextFound;
+	  }
+	}
+
+	/**
+	 * @param {string} prefix
+	 * @param {string=} baseDir
+	 */
+	function getPrefixIndexPath(prefix, baseDir) {
+	  const { repository, path } = mapPrefixToRepositoryPath(prefix);
+
+	  return (
+	    upDir(baseDir) +
+	    'accounts-index/' + repository.charAt(repository.length - 1) + '/' + path
+	  );
+	}
+
+	/** @param {string | null | undefined} baseDir */
+	function upDir(baseDir) {
+	  let normalizedBaseDir = baseDir;
+	  if (normalizedBaseDir) {
+	    const posSlash = normalizedBaseDir.indexOf('/');
+	    const posBackslash = normalizedBaseDir.indexOf('\\');
+	    const useSlash =
+	      !(posBackslash >= 0 && posSlash < 0);
+
+	    let lastDelim = normalizedBaseDir.lastIndexOf(useSlash ? '/' : '\\');
+	    if (lastDelim === normalizedBaseDir.length - 1) {
+	      normalizedBaseDir = normalizedBaseDir.slice(0, lastDelim);
+	      lastDelim = normalizedBaseDir.lastIndexOf(useSlash ? '/' : '\\');
+	    }
+
+	    if (lastDelim >= 0) {
+	      normalizedBaseDir = normalizedBaseDir.slice(0, lastDelim + 1);
+	    } else {
+	      normalizedBaseDir += (useSlash ? '/' : '\\') + '..' + (useSlash ? '/' : '\\');
+	    }
+	  } else {
+	    normalizedBaseDir = '../';
+	  }
+
+	  return normalizedBaseDir;
+	}
+
+	/** @param {string} prefix */
+	function mapPrefixToRepositoryPath(prefix) {
+	  return {
+	    repository: 'accounts-' + prefix.charAt(0),
+	    path: prefix.slice(0, 2) + '/' + prefix.slice(1) + '.json'
+	  };
+	}
+
+	async function getShortDIDIndexDataWithRetry(atClient, shortDID, maxRetryCount = 8) {
+	  let tryCount = 0;
+	  const startTime = Date.now();
+	  while (true) {
+	    if (tryCount >= maxRetryCount)
+	      return await getShortDIDIndexData(atClient, shortDID);
+
+	    try {
+	      tryCount++;
+	      return await getShortDIDIndexData(atClient, shortDID);
+	    } catch (err) {
+
+	      // if this is not a rate limit, fail fast
+	      if (!/rate/i.test(err.message || ''))
+	        return await getShortDIDIndexData(atClient, shortDID);
+
+	      if (tryCount >= maxRetryCount * 0.33) {
+	        const retryDelay = Date.now() - startTime;
+	        console.warn('Failed to get profile for ' + shortDID + ', retrying in ' + (retryDelay / 1000).toFixed(1) + 's...', err);
+	        await new Promise(resolve => setTimeout(resolve, retryDelay));
+	      } else {
+	        console.warn('Failed to get profile for ' + shortDID + ', retrying...', err);
+	      }
+	    }
+	  }
+	}
+
+	/** @param {import('@atproto/api').BskyAgent} atClient @param {string} shortDID */
+	async function getShortDIDIndexData(atClient, shortDID) {
+	  const describePromise = atClient.com.atproto.repo.describeRepo({
+	    repo: unwrapShortDID(shortDID)
+	  });
+
+	  const profilePromise = atClient.com.atproto.repo.listRecords({
+	    collection: 'app.bsky.actor.profile',
+	    repo: unwrapShortDID(shortDID)
+	  }).catch(() => { });
+
+	  const [describe, profile] = await Promise.all([describePromise, profilePromise]);
+
+	  if (!describe.data.handle) throw new Error('DID does not have a handle: ' + shortDID);
+
+	  const handle = describe.data.handle;
+
+	  /** @type {*} */
+	  const profileRec = profile?.data.records?.filter(rec => rec.value)[0]?.value;
+	  const avatarUrl = getProfileBlobUrl(shortDID, profileRec?.avatar?.ref?.toString());
+	  const bannerUrl = getProfileBlobUrl(shortDID, profileRec?.banner?.ref?.toString());
+	  const displayName = profileRec?.displayName;
+	  const description = profileRec?.description;
+
+	  const profileDetails = {
+	    shortDID: /** @type {string} */(shortenDID(shortDID)),
+	    handle: shortenHandle(handle),
+	    avatarUrl,
+	    bannerUrl,
+	    /** @type {string | undefined} */
+	    displayName,
+	    /** @type {string | undefined} */
+	    description,
+	    /** @type {*} */
+	    error: undefined
+	  };
+
+	  return profileDetails;
+	}
+
+	// @ts-check
+
+
 	async function updateIndexNode() {
-	  require('fs');
-	  require('path');
+	  const fs = require('fs');
+	  const path = require('path');
 
 	  process.stdout.write('Static BlueSky account index maintenance: ');
 	  const shortDIDs = allShortDIDs();
-	  process.stdout.write(shortDIDs.length.toLocaleString('en-us') + ' DIDs, indexed');
+	  process.stdout.write(shortDIDs.length.toLocaleString('en-us') + ' DIDs, indexed ');
 	  const indexedShortDIDs = allIndexedShortDIDs();
-	  console.log(' ' + indexedShortDIDs.length.toLocaleString('en-us') + ' DIDs');
 
-	  // const atClient = new BskyAgent({
-	  //   // service: 'https://bsky.social/xrpc'
-	  //   service: 'https://bsky.network/xrpc'
-	  // });
-	  // patchBskyAgent(atClient);
+	  const indexedSet = new Set(indexedShortDIDs);
+	  const unindexedShortDIDs = shortDIDs.filter(shortDID => !indexedSet.has(shortDID));
 
+	  process.stdout.write(' ' + indexedShortDIDs.length.toLocaleString('en-us') + ',');
+	  const remainingUnindexedShortDIDs = [...unindexedShortDIDs];
+	  const unindexedPath = path.resolve(homeDir, 'unindexed.json');
+	  fs.writeFileSync(unindexedPath, packDidsJson(remainingUnindexedShortDIDs));
+	  console.log(' left ' + unindexedShortDIDs.length.toLocaleString('en-us'));
+
+	  const atClient = new distExports.BskyAgent({
+	    service: 'https://bsky.social/xrpc'
+	    //service: 'https://bsky.network/xrpc'
+	  });
+	  patchBskyAgent(atClient);
+
+
+	  while (true) {
+	    const DID_BATCH_SIZE = 600;
+	    const didBatch = [];
+	    while (didBatch.length < DID_BATCH_SIZE && remainingUnindexedShortDIDs.length) {
+	      const pickIndex = (Math.random() * remainingUnindexedShortDIDs.length) | 0;
+	      didBatch.push(remainingUnindexedShortDIDs[pickIndex]);
+	      remainingUnindexedShortDIDs[pickIndex] = remainingUnindexedShortDIDs[remainingUnindexedShortDIDs.length - 1];
+	      remainingUnindexedShortDIDs.pop();
+	    }
+
+	    console.log('Updating index for [' + didBatch.length + '] accounts: ' + didBatch[0] + '...' + didBatch[didBatch.length - 1]);
+	    /** @type {Promise | undefined} */
+	    let finishUpdate = undefined;
+	    for await (const batch of updateIndexBatched({ atClient, dids: didBatch })) {
+	      await finishUpdate;
+
+	      process.stdout.write('  ' + batch.received + ' accounts...');
+	      const { errors, ...buckets } = await batch.flush();
+
+	      // allow parallel HTTP and filesystem
+	      finishUpdate = (async () => {
+	        const errorCount = Object.keys(errors).length;
+	        process.stdout.write(
+	          ' ' + Object.keys(buckets).length + ' buckets' +
+	          (!errorCount ? ' ' : ', ' + errorCount + (errorCount === 1 ? 'error ' : ' errors '))
+	        );
+
+	        const repositories = [];
+	        for (const bucketKey in buckets) {
+	          const bucket = buckets[bucketKey];
+	          const resolvedJsonPath = path.resolve(homeDir, bucket.indexPath);
+	          const existing = fs.existsSync(resolvedJsonPath) ? JSON.parse(fs.readFileSync(resolvedJsonPath, 'utf8')) : {};
+	          for (const shortDID in bucket.profiles) {
+	            const profile = bucket.profiles[shortDID];
+	            existing[shortDID] =
+	              profile.displayName ? [profile.handle, profile.displayName] :
+	                profile.handle;
+	          }
+
+	          fs.writeFileSync(
+	            resolvedJsonPath,
+	            '{\n' +
+	            Object.keys(existing).map(
+	              shortDID =>
+	                JSON.stringify(shortDID) + ':' + JSON.stringify(existing[shortDID])).join(',\n') +
+	            '\n}\n');
+	        
+	          if (repositories.indexOf(bucket.repository) < 0)
+	            repositories.push(bucket.repository);
+	        }
+
+	        console.log(' ' + repositories.length + ' repos updated.');
+	      })();
+	    }
+
+	    await finishUpdate;
+
+	    process.stdout.write('Updating unindexed list ');
+	    fs.writeFileSync(unindexedPath, packDidsJson(remainingUnindexedShortDIDs));
+	    console.log(' saved.');
+
+	  }
 
 	}
 

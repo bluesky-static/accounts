@@ -1,6 +1,6 @@
 // @ts-check
 
-import { getKeyShortDID, getProfileBlobUrl, shortenDID, unwrapShortDID } from './utils';
+import { getKeyShortDID, getProfileBlobUrl, getWordStartsLowerCase, shortenDID, shortenHandle, unwrapShortDID } from './utils';
 import { throttledAsyncCache } from './throttled-async-cache';
 
 /**
@@ -11,6 +11,8 @@ import { throttledAsyncCache } from './throttled-async-cache';
  */
 export async function* updateIndexBatched({ atClient, dids }) {
   let buffer = [];
+  /** @type {{ [shortDID: string]: Error}} */
+  let failedShortDIDs = {};
   let bufferStartSize = 0;
   let batchStart = Date.now();
 
@@ -18,7 +20,12 @@ export async function* updateIndexBatched({ atClient, dids }) {
   const MAX_REPORT_INTERVAL = 1000 * 20;
 
   for await (const profile of fetchProfiles({ atClient, dids })) {
-    buffer.push(profile);
+    if (profile.error) {
+      failedShortDIDs[profile.shortDID] = profile.error;
+      continue;
+    } else {
+      buffer.push(profile);
+    }
 
     if (buffer.length - bufferStartSize >= MAX_BATCH_SIZE ||
       Date.now() - batchStart >= MAX_REPORT_INTERVAL) {
@@ -42,13 +49,15 @@ export async function* updateIndexBatched({ atClient, dids }) {
 
     function flush() {
       const batch = buffer;
+      const batchErrors = failedShortDIDs;
       buffer = [];
+      failedShortDIDs = {};
 
       /**
-       * @type {{
+       * @type {{ errors: { [shortDID: string]: Error } } & {
        *  [bucketKey: string]: {
        *    indexPath: string,
-       *    repo: string,
+       *    repository: string,
        *    repoPath: string,
        *    profiles: {
        *      [shortDID: string]: Awaited<ReturnType<typeof getShortDIDIndexData>>
@@ -57,18 +66,25 @@ export async function* updateIndexBatched({ atClient, dids }) {
        * }}
        */
       const buckets = {};
+      buckets.errors = batchErrors;
+
       for (const profile of batch) {
-        const bucketKey = getKeyShortDID(profile.shortDID);
-        let bucket = buckets[bucketKey];
-        const indexPath = getPrefixIndexPath(bucketKey);
-        const { repo, path: repoPath } = mapPrefixToRepositoryPath(bucketKey);
-        if (!bucket) buckets[bucketKey] = bucket = {
-          indexPath,
-          repo,
-          repoPath,
-          profiles: {}
-        };
-        bucket.profiles[profile.shortDID] = profile;
+        const wordStarts = [];
+        if (profile.handle) getWordStartsLowerCase(profile.handle, wordStarts);
+        if (profile.displayName) getWordStartsLowerCase(profile.displayName, wordStarts);
+
+        for (const wordStart of wordStarts) {
+          let bucket = buckets[wordStart];
+          const indexPath = getPrefixIndexPath(wordStart);
+          const { repository, path: repoPath } = mapPrefixToRepositoryPath(wordStart);
+          if (!bucket) buckets[wordStart] = bucket = {
+            indexPath,
+            repository,
+            repoPath,
+            profiles: {}
+          };
+          bucket.profiles[profile.shortDID] = profile;
+        }
       }
 
       return buckets;
@@ -84,11 +100,17 @@ export async function* updateIndexBatched({ atClient, dids }) {
  */
 export async function* fetchProfiles({ atClient, dids }) {
   const throttledFetch = throttledAsyncCache(
-    getShortDIDIndexDataWithRetry, { maxConcurrency: 4 });
+    getShortDIDIndexDataWithRetry, { maxConcurrency: 3, interval: 400 });
 
   const fetchProimiseSet = new Set(
     dids.map(did => {
-      const promise = throttledFetch(atClient, shortenDID(did));
+      const promise = throttledFetch(atClient, shortenDID(did))
+        .catch(err => ({
+          shortDID: shortenDID(did),
+          handle: err.message,
+          error: err
+        }));
+
       promise.then(
         () => fetchProimiseSet.delete(promise),
         () => fetchProimiseSet.delete(promise));
@@ -97,7 +119,7 @@ export async function* fetchProfiles({ atClient, dids }) {
 
   while (fetchProimiseSet.size) {
     /** @type {Awaited<ReturnType<typeof getShortDIDIndexData>>} */
-    const nextFound = await Promise.race(fetchProimiseSet);
+    let nextFound = await Promise.race(fetchProimiseSet);
     yield nextFound;
   }
 }
@@ -107,11 +129,11 @@ export async function* fetchProfiles({ atClient, dids }) {
  * @param {string=} baseDir
  */
 export function getPrefixIndexPath(prefix, baseDir) {
-  const { repo, path } = mapPrefixToRepositoryPath(prefix);
+  const { repository, path } = mapPrefixToRepositoryPath(prefix);
 
   return (
     upDir(baseDir) +
-    'accounts-index/' + repo.charAt(repo.length - 1) + '/' + path
+    'accounts-index/' + repository.charAt(repository.length - 1) + '/' + path
   );
 }
 
@@ -138,8 +160,11 @@ function upDir(baseDir) {
   } else {
     normalizedBaseDir = '../';
   }
+
+  return normalizedBaseDir;
 }
 
+/** @param {string} prefix */
 function mapPrefixToRepositoryPath(prefix) {
   return {
     repository: 'accounts-' + prefix.charAt(0),
@@ -158,6 +183,11 @@ async function getShortDIDIndexDataWithRetry(atClient, shortDID, maxRetryCount =
       tryCount++;
       return await getShortDIDIndexData(atClient, shortDID);
     } catch (err) {
+
+      // if this is not a rate limit, fail fast
+      if (!/rate/i.test(err.message || ''))
+        return await getShortDIDIndexData(atClient, shortDID);
+
       if (tryCount >= maxRetryCount * 0.33) {
         const retryDelay = Date.now() - startTime;
         console.warn('Failed to get profile for ' + shortDID + ', retrying in ' + (retryDelay / 1000).toFixed(1) + 's...', err);
@@ -178,7 +208,7 @@ async function getShortDIDIndexData(atClient, shortDID) {
   const profilePromise = atClient.com.atproto.repo.listRecords({
     collection: 'app.bsky.actor.profile',
     repo: unwrapShortDID(shortDID)
-  });
+  }).catch(() => { });
 
   const [describe, profile] = await Promise.all([describePromise, profilePromise]);
 
@@ -187,7 +217,7 @@ async function getShortDIDIndexData(atClient, shortDID) {
   const handle = describe.data.handle;
 
   /** @type {*} */
-  const profileRec = profile.data.records?.filter(rec => rec.value)[0]?.value;
+  const profileRec = profile?.data.records?.filter(rec => rec.value)[0]?.value;
   const avatarUrl = getProfileBlobUrl(shortDID, profileRec?.avatar?.ref?.toString());
   const bannerUrl = getProfileBlobUrl(shortDID, profileRec?.banner?.ref?.toString());
   const displayName = profileRec?.displayName;
@@ -195,13 +225,15 @@ async function getShortDIDIndexData(atClient, shortDID) {
 
   const profileDetails = {
     shortDID: /** @type {string} */(shortenDID(shortDID)),
-    handle,
+    handle: shortenHandle(handle),
     avatarUrl,
     bannerUrl,
     /** @type {string | undefined} */
     displayName,
     /** @type {string | undefined} */
-    description
+    description,
+    /** @type {*} */
+    error: undefined
   };
 
   return profileDetails;
