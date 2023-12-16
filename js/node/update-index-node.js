@@ -55,7 +55,7 @@ export async function updateIndexNode() {
         const errorCount = Object.keys(errors).length;
         process.stdout.write(
           ' ' + Object.keys(buckets).length + ' buckets' +
-          (!errorCount ? ' ' : ', ' + errorCount + (errorCount === 1 ? 'error ' : ' errors '))
+          (!errorCount ? ' ' : ', ' + errorCount + (errorCount === 1 ? ' error ' : ' errors '))
         );
 
         const repositories = [];
@@ -82,16 +82,13 @@ export async function updateIndexNode() {
             repositories.push(bucket.repository);
         }
 
-        console.log(' ' + repositories.length + ' repos updated.');
+        process.stdout.write(' ' + repositories.length + ' repos updated');
+        fs.writeFileSync(unindexedPath, packDidsJson(remainingUnindexedShortDIDs));
+        console.log('.');
       })();
     }
 
     await finishUpdate;
-
-    process.stdout.write('Updating unindexed list ');
-    fs.writeFileSync(unindexedPath, packDidsJson(remainingUnindexedShortDIDs));
-    console.log(' saved.');
-
   }
 
 }
