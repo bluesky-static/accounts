@@ -10,7 +10,7 @@ export async function updateDIDsNode() {
   const fs = require('fs');
   const path = require('path');
 
-  console.log('Static BlueSky accounts maintenance...');
+  console.log('Static BlueSky account DIDs maintenance...');
 
   const atClient = new BskyAgent({
     // service: 'https://bsky.social/xrpc'

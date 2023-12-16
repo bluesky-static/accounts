@@ -30931,7 +30931,6 @@ if (cid) {
 	  else return 'dids/' + bucketKey[0] + '/' + bucketKey + '.json';
 	}
 
-
 	/** @param {string} shortDID */
 	function getKeyShortDID(shortDID) {
 	  if (shortDID.indexOf(':') >= 0) return 'web';
@@ -31012,6 +31011,51 @@ if (cid) {
 	    }
 	  }
 	  return allShortDIDs;
+	}
+
+	function allIndexFilesJSON() {
+	  const fs = require('fs');
+	  const path = require('path');
+
+	  const indexDir = path.resolve(homeDir, '../accounts-index');
+	  const oneLetterDirs = /** @type {string[]} */(fs.readdirSync(indexDir)
+	    .map(name => path.basename(name).length === 1 ? path.resolve(indexDir, name) : undefined)
+	    .filter(Boolean));
+
+	  const allFiles = [];
+	  for (const oneLetterDir of oneLetterDirs) {
+	    const twoLetterDirs =/** @type {string[]} */(fs.readdirSync(oneLetterDir)
+	      .map(name => path.basename(name).length === 2 ? path.resolve(oneLetterDir, name) : undefined)
+	      .filter(Boolean));
+
+	    for (const twoLetterDir of twoLetterDirs) {
+	      const files =
+	        fs.readdirSync(twoLetterDir)
+	          .map(name => path.resolve(twoLetterDir, name))
+	          .filter(name => name.endsWith('.json'));
+
+	      for (const f of files) {
+	        allFiles.push(f);
+	      }
+	    }
+	  }
+
+	  allFiles.push(path.resolve(homeDir, 'dids/web.json'));
+
+	  return allFiles;
+	}
+
+	function allIndexedShortDIDs() {
+	  const fs = require('fs');
+
+	  const allShortDIDs = new Set();
+	  for (const f of allIndexFilesJSON()) {
+	    const map = JSON.parse(fs.readFileSync(f, 'utf8'));
+	    for (const did in map) {
+	      allShortDIDs.add(did);
+	    }
+	  }
+	  return [...allShortDIDs];
 	}
 
 	// @ts-check
@@ -31226,7 +31270,7 @@ if (cid) {
 	  const fs = require('fs');
 	  const path = require('path');
 
-	  console.log('Static BlueSky accounts maintenance...');
+	  console.log('Static BlueSky account DIDs maintenance...');
 
 	  const atClient = new distExports.BskyAgent({
 	    // service: 'https://bsky.social/xrpc'
@@ -31345,8 +31389,29 @@ if (cid) {
 	  }
 	}
 
+	async function updateIndexNode() {
+	  require('fs');
+	  require('path');
+
+	  process.stdout.write('Static BlueSky account index maintenance: ');
+	  const shortDIDs = allShortDIDs();
+	  process.stdout.write(shortDIDs.length.toLocaleString('en-us') + ' DIDs, indexed');
+	  const indexedShortDIDs = allIndexedShortDIDs();
+	  console.log(' ' + indexedShortDIDs.length.toLocaleString('en-us') + ' DIDs');
+
+	  // const atClient = new BskyAgent({
+	  //   // service: 'https://bsky.social/xrpc'
+	  //   service: 'https://bsky.network/xrpc'
+	  // });
+	  // patchBskyAgent(atClient);
+
+
+	}
+
 	function runNode$1() {
-	  return updateDIDsNode();
+	  const updateIndex = process.argv.some(arg => /update[^a-zA-Z]*index/i.test(arg));
+	  if (updateIndex) return updateIndexNode();
+	  else return updateDIDsNode();
 	}
 
 	var node = /*#__PURE__*/Object.freeze({

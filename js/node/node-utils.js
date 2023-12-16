@@ -69,3 +69,48 @@ export function allShortDIDs() {
   }
   return allShortDIDs;
 }
+
+export function allIndexFilesJSON() {
+  const fs = require('fs');
+  const path = require('path');
+
+  const indexDir = path.resolve(homeDir, '../accounts-index');
+  const oneLetterDirs = /** @type {string[]} */(fs.readdirSync(indexDir)
+    .map(name => path.basename(name).length === 1 ? path.resolve(indexDir, name) : undefined)
+    .filter(Boolean));
+
+  const allFiles = [];
+  for (const oneLetterDir of oneLetterDirs) {
+    const twoLetterDirs =/** @type {string[]} */(fs.readdirSync(oneLetterDir)
+      .map(name => path.basename(name).length === 2 ? path.resolve(oneLetterDir, name) : undefined)
+      .filter(Boolean));
+
+    for (const twoLetterDir of twoLetterDirs) {
+      const files =
+        fs.readdirSync(twoLetterDir)
+          .map(name => path.resolve(twoLetterDir, name))
+          .filter(name => name.endsWith('.json'));
+
+      for (const f of files) {
+        allFiles.push(f);
+      }
+    }
+  }
+
+  allFiles.push(path.resolve(homeDir, 'dids/web.json'));
+
+  return allFiles;
+}
+
+export function allIndexedShortDIDs() {
+  const fs = require('fs');
+
+  const allShortDIDs = new Set();
+  for (const f of allIndexFilesJSON()) {
+    const map = JSON.parse(fs.readFileSync(f, 'utf8'));
+    for (const did in map) {
+      allShortDIDs.add(did);
+    }
+  }
+  return [...allShortDIDs];
+}

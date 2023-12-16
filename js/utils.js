@@ -59,11 +59,21 @@ export function getKeyPath(bucketKey) {
   else return 'dids/' + bucketKey[0] + '/' + bucketKey + '.json';
 }
 
-
 /** @param {string} shortDID */
 export function getKeyShortDID(shortDID) {
   if (shortDID.indexOf(':') >= 0) return 'web';
   return shortDID.slice(0, 2);
+}
+
+
+export function getProfileBlobUrl(did, cid) {
+  if (!did || !cid) return undefined;
+  return `https://cdn.bsky.app/img/avatar/plain/${unwrapShortDID(did)}/${cid}@jpeg`;
+}
+
+export function getFeedBlobUrl(did, cid) {
+  if (!did || !cid) return undefined;
+  return `https://cdn.bsky.app/img/feed_thumbnail/plain/${unwrapShortDID(did)}/${cid}@jpeg`;
 }
 
 /** @param {string} text */
@@ -92,3 +102,12 @@ export function shortenHandle(handle) {
   return handle && handle.replace(_shortenHandle_Regex, '');
 }
 const _shortenHandle_Regex = /\.bsky\.social$/;
+
+/**
+ * @param {any} x
+ * @returns {x is Promise<any>}
+ */
+export function isPromise(x) {
+  if (!x || typeof x !== 'object') return false;
+  else return typeof x.then === 'function';
+}
